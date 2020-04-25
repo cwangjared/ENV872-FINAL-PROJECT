@@ -1,0 +1,346 @@
+---
+title: "Birth Outcomes Associated with CAFOs in Different Race"
+subtitle: "https://github.com/cwangjared/ENV872-FINAL-PROJECT.git"
+author: "Jared Wang"
+date: "4/24/2020"
+fontsize: 12pt
+mainfont: Times New Roman
+output: 
+  pdf_document:
+    keep_tex: yes
+    fig_caption: yes
+    number_sections: yes
+geometry: margin=2.54cm
+---
+```{r setup,include = FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+
+```{r, message = FALSE, include = TRUE, results = 'hide'}
+#-----------------------------working directory-----------------------------
+getwd()
+
+#-----------------------------load packages-----------------------------
+library(tidyverse)
+library(ggthemes)
+library(ggplot2)
+library(tidyr)
+library(gridExtra)
+library(nlme)
+
+#-----------------------------set ggplot theme-----------------------------
+theme.hc01 <- theme_hc() +
+  theme(axis.title = element_text(family = "serif", size = (10)),
+        axis.text = element_text(family = "serif", size = (8), color = "black"))
+
+#-----------------------------load dataset-----------------------------
+df.birth.temp <- read.csv("../data/raw/birth.csv")
+```
+
+\newpage
+
+# Rationale and Research Questions
+Concentrated animal feeding operations is a significant source of water and air contaminants in southeastern North Carolina. Contamination from these facilities poses significant health threats to local communities. Residents living in areas with more CAFOs tend to have higher odds for adverse health outcomes such as respiratory disease and kidney disease. My Masters' Project investigated assocatiation between proximity to CAFOs and infant birth outcomes (gestational age and birth weight). In the past project, I identified that higher hog density and larger hog size are associated with smaller gestational age and birth weight.
+
+While the Masters' Project focuses on impact of CAFOs on the general population, it only take race as a confounding variable. However, certain races, such as Black and Latino, are usually more strongly impacted by adverse environmental conditions than other races. For this project, I am interested in exploring if a certain race is disproportionally vulnerable to CAFOs. This project aims to use generalized linear model to explore association between hog CAFO kernel density score (explained in the next section) and birth outcomes (gestational age & birth weight), stratified by race.
+
+The research question is: is the relationship between hog CAFO kernel density scores and birth outcomes the same among different races?
+
+\newpage
+
+# Dataset Information
+Predictor: hog CAFO kernel density score (represents impact from hog CAFOs)
+Birth outcomes: birth weight & gestational age
+Confouding variables: infant sex, maternal age, education, smoking history, BMI, and marital status
+
+This project uses 1) NC household level demographic and birth outcome dataset in 2016 and 2) hog CAFO kernel density scores. Both datasets are used in and wrangled for the purpose of my Masters' Project. In this project, I take the dataset wrangled for my MP and modify it to make it fit this project.
+
+The demographic and birth outcome dataset is obtained from the NC birth certificate dataset (confidential information excluded). The dataset include the following variables: birth weight, gestational age, infant sex, mother's age, prenatal BMI, smoking history, prenatal care index level, naternal race, and maternal education.
+
+Kernel density score reflects relative impact of hog CAFOs on each houeshold (each household has a unique score). It is calculated from numbers of hog CAFOs in 5 mi radius region, animal count in each CAFO, and animal size in each CAFO. The computation is previously completed by the Kernel Density tool in ArcGIS, as a part of my MP. Results are previously merged with the birth certificate dataset (code included below).
+
+```{r, message = FALSE, include = TRUE, results = 'hide'}
+#----------------------------data wrangling completed as a part of MP-----------------------------
+df.birth <- df.birth.temp %>%
+  select(KID, GEST, LBS, OZS, SEX, MARITAL, CIGPN, #select explanatory variables
+         CIGFN, CIGSN, CIGLN, MEDUC, MRACE, MHISP, 
+         KOTEL, MAGE, BMI, PLUR, Poul1, Poul2, Poul5, 
+         Hog1, Hog2, Hog5, gridcodehog, gridcodepol) %>%
+  mutate(HOG1 = Hog1, HOG2 = Hog2, HOG5 = Hog5, 
+         POU1 = Poul1, POU2 = Poul2, POU5 = Poul5, 
+         EFFHOG = gridcodehog, EFFPOU = gridcodepol) %>%
+  select(-Hog1, -Hog2, -Hog5, -Poul1, -Poul2, -Poul5, 
+         -gridcodehog, -gridcodepol) %>%
+  filter(PLUR == 1) %>%
+  mutate(SEX = ifelse(SEX == 9, NA, SEX),
+         MARITAL = ifelse(MARITAL == 9, NA, MARITAL),
+         CIGPN = ifelse(CIGPN == 99, NA, CIGPN),
+         CIGLN = ifelse(CIGLN == 99, NA, CIGLN),
+         CIGSN = ifelse(CIGSN == 99, NA, CIGSN),
+         CIGFN = ifelse(CIGFN == 99, NA, CIGFN),
+         MEDUC = ifelse(MEDUC == 9, NA, MEDUC),
+         KOTEL = ifelse(KOTEL == 0, NA, KOTEL),
+         BMI = ifelse(BMI == 999, NA, BMI)) %>%
+  mutate(ERROR = ifelse(MAGE == 29 & BMI == 25.7, 1, 0),
+         ERROR = as.factor(ERROR),
+         ERROR.GEST40 = ifelse(ERROR == 1 & GEST == 40, 1, 0),
+         ERROR.GEST40 = as.factor(ERROR.GEST40)) %>%
+  select(-PLUR) %>%
+  mutate(HOG1 = as.factor(HOG1), #create 1 mi, 2 mi, and 5 mi distance zones 
+         HOG2 = as.factor(HOG2),
+         HOG5 = as.factor(HOG5),
+         POU1 = as.factor(POU1), 
+         POU2 = as.factor(POU2),
+         POU5 = as.factor(POU5),
+         DSTHOG = ifelse(HOG5 == "1" & HOG2 == "0" & HOG1 == "0", "x5", NA),
+         DSTHOG = ifelse(HOG2 == "1" & HOG1 == "0", "x2", DSTHOG),
+         DSTHOG = ifelse(HOG1 == "1", "x1", DSTHOG),
+         DSTHOG = ifelse(HOG5 == "0", "x0", DSTHOG),
+         DSTHOG = as.factor(DSTHOG),
+         DSTPOU = ifelse(POU5 == "1" & POU2 == "0" & POU1 == "0", "x5", NA),
+         DSTPOU = ifelse(POU2 == "1" & POU1 == "0", "x2", DSTPOU),
+         DSTPOU = ifelse(POU1 == "1", "x1", DSTPOU),
+         DSTPOU = ifelse(POU5 == "0", "x0", DSTPOU),
+         DSTPOU = as.factor(DSTPOU)) %>%
+  mutate(LBS = ifelse(LBS == 99, NA, LBS), #convert birth weight to kilogram
+         OZS = ifelse(OZS == 99, NA, OZS),
+         lbs_kg = LBS/2.205,
+         ozs_kg = OZS/35.274,
+         WTKG = lbs_kg + ozs_kg) %>%
+  select(-lbs_kg, -ozs_kg, -LBS, -OZS) %>% #delete used columns
+  mutate(NUMSMOKE = CIGPN + CIGLN + CIGSN + CIGFN,
+         SMOKE = ifelse(NUMSMOKE != 0, 1, 2),
+         SMOKE = as.factor(SMOKE)) %>%
+  select(-CIGPN, -CIGLN, -CIGSN, - CIGFN, -NUMSMOKE) %>%
+  mutate(MEDUC = ifelse(MEDUC %in% c(1, 2, 3), 1, MEDUC),
+         MEDUC = ifelse(MEDUC %in% c(4, 5), 2, MEDUC),
+         MEDUC = ifelse(MEDUC == 6, 3, MEDUC),
+         MEDUC = ifelse(MEDUC %in% c(7, 8), 4, MEDUC)) %>%
+  mutate(SEX = as.factor(SEX), #convert variables to factors
+         MARITAL = as.factor(MARITAL),
+         MEDUC = as.factor(MEDUC),
+         KOTEL = as.factor(KOTEL),
+         MRACE = as.factor(MRACE),
+         MHISP = as.factor(MHISP)) %>%
+  mutate(MRACE = ifelse(MHISP %in% c("C", "M", "O", "P", "S"), "H", MRACE), #collapse race
+         MRACE = ifelse(MRACE == "2", "W", MRACE),
+         MRACE = ifelse(MRACE == "3", "B", MRACE),
+         MRACE = ifelse(MRACE %in% c("1", "4", "5", "6", "7", "8", "9"), "O", MRACE),
+         MRACE = as.factor(MRACE)) %>%
+  select(-MHISP) %>%
+  mutate(GEST = ifelse(GEST == 99, NA, GEST), #clean gestational age values
+         PRETERM = ifelse(GEST < 37, "1", "0"),
+         PRETERM = as.factor(PRETERM),
+         WTKG = ifelse(WTKG > 7, NA, WTKG),
+         WTKG = ifelse(WTKG < 0.1, NA, WTKG),
+         LBW = ifelse(WTKG < 2.5, "1", "0"),
+         LBW = as.factor(LBW)) %>% #clean birth weight values
+  na.omit()
+```
+
+The dataset used for MP is almost ready for this analysis. To simplify the dataset, the following wrangling approach is used. The ten variables used in this analysis is selected and renamed. Then variables are recoded. The dataset covers the entire state of NC, while kernel density analysis is only applicable for households living within 5 mi from a hog CAFO. Therefore, all zero values for kernel density should be eliminated.
+```{r, message = FALSE, include = TRUE, results = 'hide'}
+df.birth.kernel <- df.birth %>%
+  select(GEST, WTKG, EFFHOG, MARITAL, SEX, MAGE, 
+         MEDUC, MRACE, KOTEL, BMI) %>% #select desired variables
+  mutate(gestational.age = GEST, birth.weight = WTKG, 
+         kernel.score = EFFHOG, marital.status = MARITAL, 
+         infant.sex = SEX, mother.age = MAGE, 
+         education = MEDUC, race = MRACE, 
+         prenatal.care = KOTEL) %>%
+  mutate(marital.status = ifelse(marital.status == 1, "married", "single"), #recode variables
+         marital.status = as.factor(marital.status), 
+         infant.sex = ifelse(infant.sex == 1, "male", "female"), 
+         infant.sex = as.factor(infant.sex), 
+         prenatal.care = as.factor(prenatal.care), 
+         education = ifelse(education == 1, "highschool.below", education), 
+         education = ifelse(education == 2, "some.college", education), 
+         education = ifelse(education == 3, "complete.college", education), 
+         education = ifelse(education == 4, "graduate", education), 
+         education = as.factor(education), 
+         race = as.factor(race)) %>%
+  select(-GEST, -WTKG, -EFFHOG, -MARITAL, -SEX, -MAGE, 
+         -MEDUC, -MRACE, -KOTEL) %>%
+  filter(kernel.score != 0)
+
+#-----------------------export the dataset-----------------
+write.csv(df.birth.kernel, "../data/processed/birth.kernel.csv")
+```
+
+\newpage
+
+# Exploratory Analysis
+In general, distribution of kernel scores is skewed and data transformation may be needed. The report is associated with some other values. The total number is large.
+```{r, message = FALSE, include = TRUE}
+summary(df.birth.kernel)
+```
+
+In general, distribution of birth weight and gestational age values fit normal distribution, while that of kernel density does not. Natural logarithm is therefore applied to transform the kernel density data. Natural-log-transformed kernel density score generally fits normal distribution (Figure 1).
+```{r, message = FALSE, fig.height = 4.8, fig.width = 8}
+
+hist.bw <- ggplot(df.birth.kernel) +
+  geom_histogram(aes(birth.weight), binwidth = 0.025, fill = "lightskyblue4") +
+  labs(y= "# Household", x = "Birth weight (kg)") + 
+  theme.hc01
+
+hist.gest <- ggplot(df.birth.kernel) +
+  geom_histogram(aes(gestational.age), binwidth = 1, fill = "lightskyblue4") +
+  labs(y= "# Household", x = "Gestational age (weeks)") + 
+  theme.hc01
+
+hist.kern <- ggplot(df.birth.kernel) +
+  geom_histogram(aes(kernel.score), binwidth = 1, fill = "lightskyblue4") + 
+  scale_y_continuous(limits = c(0, 300)) + 
+  labs(y= "# Household", x = "Kernel density score") + 
+  theme.hc01
+
+df.birth.kernel <- df.birth.kernel %>%
+  mutate(kernel.score.log = log(kernel.score))
+
+hist.kernlog <- ggplot(df.birth.kernel) +
+  geom_histogram(aes(kernel.score.log), binwidth = 1, fill = "lightskyblue4") +
+  labs(y= "# Household", x = "Log kernel density score") + 
+  theme.hc01
+
+grid.arrange(hist.bw, hist.gest, 
+             hist.kern, hist.kernlog, ncol = 2)
+```
+
+Figure 1: visualization of birth weight, gestational age, and hog CAFO kernel density scores.
+
+
+It is difficult to conclude a general trend from visualized data. However, there appear to be difference between average birth weight among different race. For example, white and hispanic infants tend to have higher average birth weight than black infants (Figure 2). 
+```{r, message = FALSE, fig.height = 7.2, fig.width = 6}
+#create four datasets
+df.black <- df.birth.kernel %>%
+  filter(race == "B")
+df.hisp <- df.birth.kernel %>%
+  filter(race == "H")
+df.white <- df.birth.kernel %>%
+  filter(race == "W")
+df.other <- df.birth.kernel %>%
+  filter(race == "O")
+
+#plot
+scat.bw.black <- ggplot(df.black) +
+  geom_point(aes(x = kernel.score.log, y = birth.weight), 
+             size = 0.8, alpha = 1, color = "gold3") + 
+  geom_smooth(aes(x = kernel.score.log, y = birth.weight), 
+              method = lm, 
+              lty = 5, lwd = 0.7, color = "gray") +
+  labs(x = "Log kernel density score", 
+       y = "Birth weight (kg) - Black") +
+  #scale_color_manual(values = c("gold3", "lightskyblue3", "gray", "red3")) + 
+  theme.hc01
+
+scat.bw.hisp <- ggplot(df.hisp) +
+  geom_point(aes(x = kernel.score.log, y = birth.weight), 
+             size = 0.8, alpha = 1, color = "gold3") + 
+  geom_smooth(aes(x = kernel.score.log, y = birth.weight), 
+              method = lm, 
+              lty = 5, lwd = 0.7, color = "gray") +
+  labs(x = "Log kernel density score", 
+       y = "Birth weight (kg) - Hispanic") +
+  #scale_color_manual(values = c("gold3", "lightskyblue3", "gray", "red3")) + 
+  theme.hc01
+
+scat.bw.white <- ggplot(df.white) +
+  geom_point(aes(x = kernel.score.log, y = birth.weight), 
+             size = 0.8, alpha = 1, color = "gold3") + 
+  geom_smooth(aes(x = kernel.score.log, y = birth.weight), 
+              method = lm, 
+              lty = 5, lwd = 0.7, color = "gray") +
+  labs(x = "Log kernel density score", 
+       y = "Birth weight (kg) - White") +
+  #scale_color_manual(values = c("gold3", "lightskyblue3", "gray", "red3")) + 
+  theme.hc01
+
+grid.arrange(scat.bw.black, scat.bw.hisp, scat.bw.white, 
+             ncol = 1)
+```
+
+Figure 2: Birth weight against log kernel density score for different race.
+
+```{r, message = FALSE, fig.height = 7.2, fig.width = 6}
+#plot
+scat.gest.black <- ggplot(df.black) +
+  geom_point(aes(x = kernel.score.log, y = gestational.age), 
+             size = 0.8, alpha = 1, color = "gold3") + 
+  geom_smooth(aes(x = kernel.score.log, y = gestational.age), 
+              method = lm, 
+              lty = 5, lwd = 0.7, color = "gray") +
+  labs(x = "Log kernel density score", 
+       y = "Gestational age (weeks) - Black") +
+  #scale_color_manual(values = c("gold3", "lightskyblue3", "gray", "red3")) + 
+  theme.hc01
+
+scat.gest.hisp <- ggplot(df.hisp) +
+  geom_point(aes(x = kernel.score.log, y = gestational.age), 
+             size = 0.8, alpha = 1, color = "gold3") + 
+  geom_smooth(aes(x = kernel.score.log, y = gestational.age), 
+              method = lm, 
+              lty = 5, lwd = 0.7, color = "gray") +
+  labs(x = "Log kernel density score", 
+       y = "Gestational age (weeks) - Hispanic") +
+  #scale_color_manual(values = c("gold3", "lightskyblue3", "gray", "red3")) + 
+  theme.hc01
+
+scat.gest.white <- ggplot(df.white) +
+  geom_point(aes(x = kernel.score.log, y = gestational.age), 
+             size = 0.8, alpha = 1, color = "gold3") + 
+  geom_smooth(aes(x = kernel.score.log, y = gestational.age), 
+              method = lm, 
+              lty = 5, lwd = 0.7, color = "gray") +
+  labs(x = "Log kernel density score", 
+       y = "Gestational age (weeks) - White") +
+  #scale_color_manual(values = c("gold3", "lightskyblue3", "gray", "red3")) + 
+  theme.hc01
+
+grid.arrange(scat.gest.black, scat.gest.hisp, scat.gest.white, 
+             ncol = 1)
+```
+
+Figure 3: Gestational age against log kernel density score for different race.
+
+\newpage
+
+# Analysis
+Generalized linear models are used to predict birth weight and gestational age with natural log of kernel score and other confounding variables. One log unit increase in hog CAFO kernel density score among black and hispanic women is associated with 0.009 and 0.010 kg lower birth weight on average (p < 0.05). One log unit increase in kernel score among white women may be associated with 0.005 kg lower birth weight on average, but the result is not statistically significant (p > 0.05).
+```{r, message = FALSE, include = TRUE}
+glm.birthweight.black <- glm(data = df.black, 
+                           birth.weight ~ kernel.score.log + infant.sex + mother.age + 
+                             BMI + education + prenatal.care + marital.status)
+glm.birthweight.hispanic <- glm(data = df.hisp, 
+                           birth.weight ~ kernel.score.log + infant.sex + mother.age + 
+                             BMI + education + prenatal.care + marital.status)
+glm.birthweight.white <- glm(data = df.white, 
+                           birth.weight ~ kernel.score.log + infant.sex + mother.age + 
+                             BMI + education + prenatal.care + marital.status)
+summary(glm.birthweight.black)
+summary(glm.birthweight.hispanic)
+summary(glm.birthweight.white)
+```
+
+One log unit increase in hog CAFO kernel density score among black, hispanic, and white women is associated with 0.042, 0.034, and 0.025 week earlier delivery on average (p < 0.05). These values translate to 0.29, 0.27, and 0.18 days earlier. White residents living within 5 mi from a CAFO may be less severely influenced than black and hispanic residents.
+
+```{r, message = FALSE, include = TRUE}
+glm.gestation.black <- glm(data = df.black, 
+                           gestational.age ~ kernel.score.log + infant.sex + mother.age + 
+                             BMI + education + prenatal.care + marital.status)
+glm.gestation.hispanic <- glm(data = df.hisp, 
+                           gestational.age ~ kernel.score.log + infant.sex + mother.age + 
+                             BMI + education + prenatal.care + marital.status)
+glm.gestation.white <- glm(data = df.white, 
+                           gestational.age ~ kernel.score.log + infant.sex + mother.age + 
+                             BMI + education + prenatal.care + marital.status)
+summary(glm.gestation.black)
+summary(glm.gestation.hispanic)
+summary(glm.gestation.white)
+```
+
+
+\newpage
+
+# Discussion and Summary
+In general, CAFO impact level quantified by the kernel density approach is a predictor of adverse birth outcomes (smaller gestational age & lower birth weight) among infants born in 2016 in NC. This project considers other health-related confounding variables. For each log unit change in kernel density score, black and hispanic mothers tend to be associated with more significant change in delivery time. Black and hispanic mothers also tend to deliver lighter infants with the same change in kernel density scores, comparing to white mothers. This finding adds to the belief that exposure to CAFOs is a potential environmental justice issue. This study indicates the possibility that, groups of minority are not only disproportionately exposed to CAFOs. At the same time, however, they may be more vulnerable given the same level of exposure.
